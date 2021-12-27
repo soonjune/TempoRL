@@ -497,7 +497,7 @@ class DQN:
 
         # Final evaluation
         if (total_steps % eval_every_n_steps) != 0:
-            eval_s, eval_r, eval_d = self.eval(eval_eps, max_env_time_steps)
+            eval_s, eval_r, eval_d, eval_ext = self.eval(eval_eps, max_env_time_steps)
             eval_stats = dict(
                 elapsed_time=time.time() - start_time,
                 training_steps=total_steps,
@@ -506,7 +506,8 @@ class DQN:
                 avg_num_decs_per_eval_ep=float(np.mean(eval_d)),
                 avg_rew_per_eval_ep=float(np.mean(eval_r)),
                 std_rew_per_eval_ep=float(np.std(eval_r)),
-                eval_eps=eval_eps
+                eval_eps=eval_eps,
+                ext_proportion=eval_ext,
             )
 
             with open(os.path.join(out_dir, 'eval_scores.json'), 'a+') as out_fh:
@@ -525,6 +526,7 @@ class DQN:
         with torch.no_grad():
             for e in range(episodes):
                 ed, es, er = 0, 0, 0
+                ext = {}
 
                 s = self._eval_env.reset()
                 for _ in count():
@@ -1258,7 +1260,7 @@ class BanditDQN:
             return np.random.randint(self._action_dim)
         return u
 
-    def get_ext(self, x: np.ndarray, a: np.ndarray) -> int:
+    def get_ext(self, x: np.ndarray, a: np.ndarray, test: bool) -> int:
         """
         Simple helper to get extension length based on observation x and action a
         """
@@ -1267,7 +1269,7 @@ class BanditDQN:
         context = np.stack([context.copy() for i in range(self._skip_dim)])
         context = np.c_[context, np.array([i for i in range(self._skip_dim)])]
         # pull extension length
-        extension, _, _, _ = self.bandit_ed.select(context)
+        extension, _, _, _ = self.bandit_ed.select(context, test)
         return extension
 
     def eval(self, episodes: int, max_env_time_steps: int):
@@ -1279,6 +1281,10 @@ class BanditDQN:
         :returns (steps per episode), (reward per episode), (decisions per episode)
         """
         steps, rewards, decisions = [], [], []
+        eval_ext = dict()
+        for i in range(self._skip_dim):
+            eval_ext[i+1] = 0
+
         with torch.no_grad():
             for e in range(episodes):
                 ed, es, er = 0, 0, 0
@@ -1293,7 +1299,8 @@ class BanditDQN:
                     # print('')
                     # print('')
                     # skip = self.get_skip(np.array([s]), np.array([[a]]), 0)
-                    extension = self.get_ext(s, np.array([a]))
+                    extension = self.get_ext(s, np.array([a]), True)
+                    eval_ext[extension+1] += 1
                     ed += 1
 
                     d = False
@@ -1310,7 +1317,7 @@ class BanditDQN:
                 rewards.append(er)
                 decisions.append(ed)
 
-        return steps, rewards, decisions
+        return steps, rewards, decisions, {k: eval_ext[k]/sum(eval_ext[k] for k in eval_ext) for k in eval_ext}
 
     def train(self, episodes: int, max_env_time_steps: int, epsilon: float, eval_eps: int = 1,
               eval_every_n_steps: int = 1, max_train_time_steps: int = 1_000_000):
@@ -1332,7 +1339,7 @@ class BanditDQN:
             d = False
             for _ in count():
                 a = self.get_action(s, epsilon)
-                extension = self.get_ext(s, np.array([a]))  # get skip with the selected action as context
+                extension = self.get_ext(s, np.array([a]), False)  # get skip with the selected action as context
 
                 skip_states, skip_rewards = [], []
                 for curr_skip in range(extension + 1):  # repeat the selected action for "skip" times
@@ -1344,7 +1351,7 @@ class BanditDQN:
 
                     #### Begin Evaluation
                     if (total_steps % eval_every_n_steps) == 0:
-                        eval_s, eval_r, eval_d = self.eval(eval_eps, max_env_time_steps)
+                        eval_s, eval_r, eval_d, eval_ext = self.eval(eval_eps, max_env_time_steps)
                         eval_stats = dict(
                             elapsed_time=time.time() - start_time,
                             training_steps=total_steps,
@@ -1353,7 +1360,8 @@ class BanditDQN:
                             avg_num_decs_per_eval_ep=float(np.mean(eval_d)),
                             avg_rew_per_eval_ep=float(np.mean(eval_r)),
                             std_rew_per_eval_ep=float(np.std(eval_r)),
-                            eval_eps=eval_eps
+                            eval_eps=eval_eps,
+                            ext_proportion=eval_ext,
                         )
 
                         with open(os.path.join(out_dir, 'eval_scores.json'), 'a+') as out_fh:
@@ -1410,7 +1418,7 @@ class BanditDQN:
 
         # final evaluation
         if (total_steps % eval_every_n_steps) != 0:
-            eval_s, eval_r, eval_d = self.eval(eval_eps, max_env_time_steps)
+            eval_s, eval_r, eval_d, eval_ext = self.eval(eval_eps, max_env_time_steps)
             eval_stats = dict(
                 elapsed_time=time.time() - start_time,
                 training_steps=total_steps,
@@ -1419,7 +1427,8 @@ class BanditDQN:
                 avg_num_decs_per_eval_ep=float(np.mean(eval_d)),
                 avg_rew_per_eval_ep=float(np.mean(eval_r)),
                 std_rew_per_eval_ep=float(np.std(eval_r)),
-                eval_eps=eval_eps
+                eval_eps=eval_eps,
+                ext_proportion=eval_ext,
             )
 
             with open(os.path.join(out_dir, 'eval_scores.json'), 'a+') as out_fh:

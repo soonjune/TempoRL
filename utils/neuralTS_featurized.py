@@ -8,12 +8,13 @@ import torch.optim as optim
 class Network(nn.Module):
     def __init__(self, dim, hidden_size=100):
         super(Network, self).__init__()
+        self.input_batch_norm = nn.BatchNorm1d(dim)
         self.fc1 = nn.Linear(dim, hidden_size)
         self.activate = nn.ReLU()
         self.fc2 = nn.Linear(hidden_size, 1)
 
     def forward(self, x):
-        return self.fc2(self.activate(self.fc1(x)))
+        return self.fc2(self.activate(self.fc1(self.input_batch_norm(x))))
 
 
 class NeuralTSDiag:
@@ -30,7 +31,7 @@ class NeuralTSDiag:
         self.loss_func = nn.MSELoss()
         self.batch_size = batch_size
 
-    def select(self, context):
+    def select(self, context, test):
         tensor = torch.from_numpy(context).float().cuda()
         mu = self.func(tensor)
         g_list = []
@@ -38,21 +39,37 @@ class NeuralTSDiag:
         ave_sigma = 0
         ave_rew = 0
         for fx in mu:
-            self.func.zero_grad()
-            fx.backward(retain_graph=True)
-            g = torch.cat([p.grad.flatten().detach() for p in self.func.parameters()])
-            g_list.append(g)
-            sigma2 = self.lamdba * self.nu * g * g / self.U
-            sigma = torch.sqrt(torch.sum(sigma2))
-            if self.style == 'ts':
-                sample_r = np.random.normal(loc=fx.item(), scale=sigma.item())
-            elif self.style == 'ucb':
-                sample_r = fx.item() + sigma.item()
+            if test:
+                with torch.no_grad():
+                    g = torch.cat([p.grad.flatten().detach() for p in self.func.parameters()])
+                    g_list.append(g)
+                    sigma2 = self.lamdba * self.nu * g * g / self.U
+                    sigma = torch.sqrt(torch.sum(sigma2))
+                    if self.style == 'ts':
+                        sample_r = np.random.normal(loc=fx.item(), scale=sigma.item())
+                    elif self.style == 'ucb':
+                        sample_r = fx.item() + sigma.item()
+                    else:
+                        raise RuntimeError('Exploration style not set')
+                    sampled.append(sample_r)
+                    ave_sigma += sigma.item()
+                    ave_rew += sample_r
             else:
-                raise RuntimeError('Exploration style not set')
-            sampled.append(sample_r)
-            ave_sigma += sigma.item()
-            ave_rew += sample_r
+                self.func.zero_grad()
+                fx.backward(retain_graph=True)
+                g = torch.cat([p.grad.flatten().detach() for p in self.func.parameters()])
+                g_list.append(g)
+                sigma2 = self.lamdba * self.nu * g * g / self.U
+                sigma = torch.sqrt(torch.sum(sigma2))
+                if self.style == 'ts':
+                    sample_r = np.random.normal(loc=fx.item(), scale=sigma.item())
+                elif self.style == 'ucb':
+                    sample_r = fx.item() + sigma.item()
+                else:
+                    raise RuntimeError('Exploration style not set')
+                sampled.append(sample_r)
+                ave_sigma += sigma.item()
+                ave_rew += sample_r
         arm = np.argmax(sampled)
         self.U += g_list[arm] * g_list[arm]
         return arm, g_list[arm].norm().item(), ave_sigma, ave_rew
@@ -76,7 +93,7 @@ class NeuralTSDiag:
         if self.context_list is None:
             self.context_list = context.detach().reshape(self.batch_size,-1).to(device='cuda', dtype=torch.float32)
             self.reward = reward.detach()
-        elif self.context_list.shape[0] > 2000:
+        elif self.context_list.shape[0] > 512:
             self.context_list = torch.cat(
                 (self.context_list[self.batch_size:][:], context.detach().reshape(self.batch_size,-1).to(device='cuda', dtype=torch.float32))
             )
@@ -88,7 +105,7 @@ class NeuralTSDiag:
             self.reward = torch.cat((self.reward, reward.detach().to(device='cuda', dtype=torch.float32)))
         # if self.len % self.delay != 0:
         #     return 0
-        for _ in range(50):
+        for _ in range(16):
             pred = self.func(self.context_list).view(-1)
             loss = self.loss_func(pred, self.reward.view(-1))
             loss.backward()
