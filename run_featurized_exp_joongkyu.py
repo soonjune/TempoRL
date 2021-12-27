@@ -12,7 +12,6 @@ from collections import namedtuple
 import time
 from mountain_car import MountainCarEnv
 from utils import experiments
-from utils.neuralTS_featurized import NeuralTSDiag
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -162,6 +161,19 @@ class Q(nn.Module):
         self.fc1 = nn.Linear(state_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, action_dim)
+        self._non_linearity = non_linearity
+
+    def forward(self, x):
+        x = self._non_linearity(self.fc1(x))
+        x = self._non_linearity(self.fc2(x))
+        return self.fc3(x)
+
+class BanditNet(nn.Module):
+    def __init__(self, context_dim, bandit_dim, non_linearity=F.relu, hidden_dim=10):
+        super(BanditNet, self).__init__()
+        self.fc1 = nn.Linear(context_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, bandit_dim)
         self._non_linearity = non_linearity
 
     def forward(self, x):
@@ -347,39 +359,6 @@ class NoneConcatSkipReplayBuffer:
         batch_behavoiurs = np.array([self._data.behaviour_action[i] for i in batch_indices])
         return tt(batch_states), tt(batch_actions), tt(batch_next_states),\
                tt(batch_rewards), tt(batch_terminal_flags), tt(batch_lengths), tt(batch_behavoiurs)
-
-
-class ContextReplayBuffer:
-    """
-    Replay Buffer for training the skip-Q.
-    Expects states in which the behaviour-action is not siply concatenated for the skip-Q.
-    Stores transitions as usual but with additional skip-length. The skip-length is used to properly discount.
-    Additionally stores the behaviour_action which is the context for this skip-transition.
-    """
-
-    def __init__(self, max_size):
-        self._data = namedtuple("ReplayBuffer", ["contexts",
-                                                 "rewards"])
-        self._data = self._data(contexts=[], rewards=[])
-        self._size = 0
-        self._max_size = max_size
-
-    def add_transition(self, context, reward):
-        self._data.contexts.append(context)
-        self._data.rewards.append(reward)
-        self._size += 1
-
-        if self._size > self._max_size:
-            self._data.contexts.pop(0)
-            self._data.rewards.pop(0)
-
-    def random_next_batch(self, batch_size):
-        batch_indices = np.random.choice(len(self._data.contexts), batch_size)
-        batch_contexts = np.array([self._data.contexts[i] for i in batch_indices])
-        batch_rewards = np.array([self._data.rewards[i] for i in batch_indices])
-        return tt(batch_contexts),\
-             tt(batch_rewards)
-
 
 
 class DQN:
@@ -1203,50 +1182,71 @@ class TDQN:
         torch.save(self._skip_q.state_dict(), os.path.join(path, 'TQ'))
 
 
-class BanditDQN:
+class Bandit_DQN:
     """
-    TempoRL DQN agent capable of handling more complex state inputs through use of contextualized behaviour actions.
+    Bandit DQN agent that maintains separate skip and behaviour Q-networks.
+    Only works for featurized data as it expects the possibility to concatenate the behaviour action to the state vector
+    as input for the bandit
     """
 
-    def __init__(self, state_dim, action_dim, skip_dim, gamma, env, eval_env, vision=False, shared=True):
+    def __init__(self, state_dim: int, action_dim: int, bandit_dim: int, gamma: float, env: gym.Env, eval_env: gym.Env,
+                 vision: bool = False):
         """
         Initialize the DQN Agent
         :param state_dim: dimensionality of the input states
         :param action_dim: dimensionality of the action output
-        :param skip_dim: dimenionality of the skip output
+        :param bandit_dim: dimenionality of the bandit output
         :param gamma: discount factor
         :param env: environment to train on
         :param eval_env: environment to evaluate on
         :param vision: boolean flag to indicate if the input state is an image or not
-        :param shared: boolean flag to indicate if a weight sharing input representation is used or not.
         """
-        if not vision:
-            if shared:
-                self._q = WeightSharingTQ(state_dim, action_dim, skip_dim).to(device)
-                self._q_target = WeightSharingTQ(state_dim, action_dim, skip_dim).to(device)
-            else:
-                self._q = Q(state_dim, action_dim).to(device)
-                self._q_target = Q(state_dim, action_dim).to(device)
-        else:
-            self._q = NatureWeightsharingTQN(state_dim, action_dim, skip_dim).to(device)
-            self._q_target = NatureWeightsharingTQN(state_dim, action_dim, skip_dim).to(device)
+        # for bandit
+        self.reg=1
+        self.sigma=0.5
+        self.nbArms = 10 #K
+        self.context_dim = state_dim + 1 + self.nbArms #context dim = |S|+|A|+|N|
+        self.nu = 0.5
 
-        context_dimension = state_dim + 1 + 1  # context dim = |A|+|S|+|N|
-        style = 'ts'
-        self.bandit_ed = NeuralTSDiag(context_dimension, 1, 1, 128, style, batch_size=64)
-        print('Using {} as Q'.format(str(self._q)))
+        if not vision:  # featurized states
+            self._q = Q(state_dim, action_dim).to(device)
+            self._q_target = Q(state_dim, action_dim).to(device)
+            
+            self._bandit_net = BanditNet(self.context_dim , bandit_dim).to(device)
+            
+        else:
+            raise NotImplementedError
 
         self._gamma = gamma
         self._loss_function = nn.MSELoss()
-        self._skip_loss_function = nn.MSELoss()
+        self._bandit_loss_function = nn.MSELoss()
         self._q_optimizer = optim.Adam(self._q.parameters(), lr=0.001)
+        self._bandit_optimizer = optim.Adam(self._bandit_net.parameters(), lr=0.001)
+
         self._action_dim = action_dim
-        self._skip_dim = skip_dim
+        self._bandit_dim = bandit_dim
 
         self._replay_buffer = ReplayBuffer(1e6)
-        self._context_replay_buffer = ContextReplayBuffer(1e6)
+        self._bandit_replay_buffer = SkipReplayBuffer(1e6)
         self._env = env
         self._eval_env = eval_env
+        
+        self.clear()
+
+    def clear(self):
+        with torch.no_grad():
+            # initialize the design matrix, its inverse, 
+            # the vector containing the sum of r_s*x_s and the least squares estimate
+            self.t=1
+            self.Design=[]
+            self.DesignInv=[]
+            self.Vector=[]
+            self.thetaLS=[]
+            self.Design=self.reg*torch.eye(self._bandit_dim, device=device)  # dxd
+            self.DesignInv=(1/self.reg)*torch.eye(self._bandit_dim, device=device)
+            self.Vector=torch.zeros((self._bandit_dim,1), device=device)
+            self.thetaLS=torch.zeros((self._bandit_dim,1), device=device) # regularized least-squares estimate
+        
 
     def get_action(self, x: np.ndarray, epsilon: float) -> int:
         """
@@ -1258,17 +1258,58 @@ class BanditDQN:
             return np.random.randint(self._action_dim)
         return u
 
-    def get_ext(self, x: np.ndarray, a: np.ndarray) -> int:
+    def get_skip(self, x: np.ndarray) -> int:
         """
-        Simple helper to get extension length based on observation x and action a
+        Simple helper to get the skip length based on observation x
         """
-        # create context (state+action+extension)
-        context = np.concatenate((x, a))
-        context = np.stack([context.copy() for i in range(self._skip_dim)])
-        context = np.c_[context, np.array([i for i in range(self._skip_dim)])]
-        # pull extension length
-        extension, _, _, _ = self.bandit_ed.select(context)
-        return extension
+        x = torch.FloatTensor(x)
+        x = x.repeat(self.nbArms,1)  # KxD
+        v = torch.arange(self.nbArms).expand(self.nbArms,self.nbArms) # KxK
+        arm_idx = torch.arange(self.nbArms).reshape(-1,1)
+        many_hot_arm_idx = (v<=arm_idx).float() # KxK
+        x = torch.cat((x,many_hot_arm_idx),dim=1) #Kx(D+N)
+        with torch.no_grad():
+            N = torch.distributions.multivariate_normal.MultivariateNormal(self.thetaLS.view(-1),(self.nu*self.nu)*self.DesignInv)
+            theta_tilda = N.sample() # d
+            theta_tilda = torch.as_tensor(theta_tilda).to(device)
+            z = self._bandit_net(x.to(device)) # Kxd
+            reward_tilda = torch.matmul(z,theta_tilda).squeeze() # K
+            chosen_arm = torch.argmax(reward_tilda, 0)
+        return chosen_arm.detach().cpu().numpy()
+
+    def update(self, states, extend_length, target_rewards):
+        batch_size = states.shape[0]
+        self._bandit_net.train()
+        extend_length = extend_length.view(-1, 1) # Bx1
+        v = torch.arange(self.nbArms).repeat(batch_size,1).to(device)
+        many_hot_arm_idx = (v <= extend_length).float()
+        target_rewards = target_rewards.view(-1, 1)
+        contexts = torch.cat((  states, many_hot_arm_idx), dim=1) # Bx(D+1+N)        
+        z = self._bandit_net(contexts) # Bxd
+        N=torch.distributions.multivariate_normal.MultivariateNormal(self.thetaLS.view(-1),(self.nu*self.nu)*self.DesignInv)
+        theta_tilda=N.sample()
+        theta_tilda=torch.as_tensor(theta_tilda).to(device)
+        reward_tilda=torch.matmul(z,theta_tilda).view(-1, 1) #Bx1
+
+        bandit_loss = F.mse_loss(reward_tilda, target_rewards.detach())
+        # Optimize the model
+        self._bandit_optimizer.zero_grad()
+        bandit_loss.backward()
+        for param in self._bandit_net.parameters():
+            param.grad.data.clamp_(-1, 1)
+        self._bandit_optimizer.step()
+
+        # Update theta
+        with torch.no_grad():
+            self.Design = self.Design + torch.matmul(z.T,z) # (dxB) x (Bxd) -> dxd 
+            self.Vector = self.Vector + torch.sum(target_rewards.detach()*z, 0).view(-1,1) # Bx1 * Bxd -> Bxd -> dx1
+            # online update of the inverse of the design matrix
+            omega=torch.matmul(z,self.DesignInv) # (Bxd) x (dxd) -> Bxd           
+            self.DesignInv= self.DesignInv- torch.matmul(omega.T,omega)/(1+torch.trace(torch.matmul(z,omega.T)).item()) # (dxd) / (BxB) -> dxd
+            # update of the least squares estimate 
+            self.thetaLS = torch.matmul(self.DesignInv,self.Vector) # d
+            self.t+=1
+        return bandit_loss
 
     def eval(self, episodes: int, max_env_time_steps: int):
         """
@@ -1285,19 +1326,13 @@ class BanditDQN:
 
                 s = self._eval_env.reset()
                 for _ in count():
-                    # print(self._q(tt(s)))
-                    # a = self.get_action(np.array([s]), 0)
                     a = self.get_action(s, 0)
-                    # print(self._skip_q(tt(s), tt(np.array([a]))))
-                    # print('')
-                    # print('')
-                    # print('')
-                    # skip = self.get_skip(np.array([s]), np.array([[a]]), 0)
-                    extension = self.get_ext(s, np.array([a]))
+                    skip_state = np.hstack([s, [a]])
+                    skip = self.get_skip(skip_state)
                     ed += 1
 
                     d = False
-                    for _ in range(extension + 1):
+                    for _ in range(skip + 1):
                         ns, r, d, _ = self._eval_env.step(a)
                         er += r
                         es += 1
@@ -1329,20 +1364,21 @@ class BanditDQN:
             print("%s/%s" % (e + 1, episodes))
             s = self._env.reset()
             es = 0
-            d = False
             for _ in count():
                 a = self.get_action(s, epsilon)
-                extension = self.get_ext(s, np.array([a]))  # get skip with the selected action as context
-
+                skip_state = np.hstack([s, [a]])  # concatenate action to the state
+                skip = self.get_skip(skip_state)
+                
+                d = False
                 skip_states, skip_rewards = [], []
-                for curr_skip in range(extension + 1):  # repeat the selected action for "skip" times
+                for curr_skip in range(skip + 1):  # play the same action a "skip" times
                     ns, r, d, _ = self._env.step(a)
                     total_steps += 1
                     es += 1
-                    skip_states.append(s)  # keep track of all observed skips
+                    skip_states.append(np.hstack([s, [a]]))  # keep track of all states that are visited inbetween
                     skip_rewards.append(r)
 
-                    #### Begin Evaluation
+                    #### Evaluation
                     if (total_steps % eval_every_n_steps) == 0:
                         eval_s, eval_r, eval_d = self.eval(eval_eps, max_env_time_steps)
                         eval_stats = dict(
@@ -1359,33 +1395,41 @@ class BanditDQN:
                         with open(os.path.join(out_dir, 'eval_scores.json'), 'a+') as out_fh:
                             json.dump(eval_stats, out_fh)
                             out_fh.write('\n')
-                    #### End Evaluation
+                    ### Evaluation
 
-                    # TDOD Update bandit with observed states
+                    # Update the skip buffer with all observed transitions
                     skip_id = 0
                     for start_state in skip_states:
                         skip_reward = 0
                         for exp, r in enumerate(skip_rewards[skip_id:]):  # make sure to properly discount
                             skip_reward += np.power(self._gamma, exp) * r
-                        if not d:
-                            skip_reward += max(self._q(tt(skip_states[-1]).to(device)).detach().cpu().numpy())
 
-                        # create context
-                        context = np.concatenate((start_state, [a], [curr_skip - skip_id + 1]))
-                        self._context_replay_buffer.add_transition(context, skip_reward)  # also keep track of the behavior action
+                        self._bandit_replay_buffer.add_transition(start_state, curr_skip - skip_id, ns,
+                                                                skip_reward, d, curr_skip - skip_id + 1) 
                         skip_id += 1
 
-                    # Bandit update
-                    batch_contexts, batch_rewards = self._context_replay_buffer.random_next_batch(64)
-                    batch_contexts, batch_rewards = batch_contexts.to(device), batch_rewards.to(device)
-                    self.bandit_ed.train(batch_contexts, batch_rewards)
+                    # Skip Q update based on double DQN where the target is the behaviour network
+                    batch_states, batch_actions, batch_next_states, batch_rewards, \
+                    batch_terminal_flags, batch_lengths = self._bandit_replay_buffer.random_next_batch(64)
 
-                    # Action Q update based on double DQN with normal target
+                    batch_states, batch_actions, batch_next_states, batch_rewards, batch_terminal_flags, batch_lengths =\
+                    batch_states.to(device), batch_actions.to(device), batch_next_states.to(device), batch_rewards.to(device), batch_terminal_flags.to(device), batch_lengths.to(device)
+
+                    # reward 포함
+                    target_rewards = batch_rewards + (1 - batch_terminal_flags) * self._gamma * \
+                             torch.max(self._q(batch_next_states), dim=1)[0]
+                    # reward 미포함
+                    '''target_rewards = torch.max(self._q(batch_next_states), dim=1)[0]'''           
+                    
+                    bandit_loss = self.update(batch_states, batch_lengths, target_rewards)
+
+                    # Action Q update based on double DQN with standard target network
                     self._replay_buffer.add_transition(s, a, ns, r, d)
                     batch_states, batch_actions, batch_next_states, batch_rewards, batch_terminal_flags = \
                         self._replay_buffer.random_next_batch(64)
+
                     batch_states, batch_actions, batch_next_states, batch_rewards, batch_terminal_flags = \
-                    batch_states.to(device), batch_actions.to(device), batch_next_states.to(device), batch_rewards.to(device), batch_terminal_flags.to(device) 
+                    batch_states.to(device), batch_actions.to(device), batch_next_states.to(device), batch_rewards.to(device), batch_terminal_flags.to(device)    
 
                     target = batch_rewards + (1 - batch_terminal_flags) * self._gamma * \
                              self._q_target(batch_next_states)[torch.arange(64).long(), torch.argmax(
@@ -1408,7 +1452,7 @@ class BanditDQN:
             if total_steps >= max_train_time_steps:
                 break
 
-        # final evaluation
+        # Final evaluatoin
         if (total_steps % eval_every_n_steps) != 0:
             eval_s, eval_r, eval_d = self.eval(eval_eps, max_env_time_steps)
             eval_stats = dict(
@@ -1431,8 +1475,8 @@ class BanditDQN:
         # self.save_optional = {self._q_optimizer, self._skip_q_optimizer,
         #                       self._replay_buffer, self._skip_replay_buffer}
         torch.save(self._q.state_dict(), os.path.join(path, 'Q'))
-        torch.save(self.bandit_ed.func.state_dict(), os.path.join(path, 'Bandit'))
-
+        torch.save(self._bandit_net.state_dict(), os.path.join(path, 'TQ')) 
+        
 if __name__ == "__main__":
     import argparse
 
@@ -1499,7 +1543,7 @@ if __name__ == "__main__":
     parser.add_argument('--env', choices=['mountain', 'moon', 'pong'], default='mountain')
 
     # for bandit
-    # parser.add_argument('--bandit-latent-dim', default=8, type=int)
+    parser.add_argument('--bandit-latent-dim', default=10, type=int)
 
     # setup output dir
     args = parser.parse_args()
@@ -1532,7 +1576,7 @@ if __name__ == "__main__":
             agent = TDQN(state_dim, action_dim, args.skip_net_max_skips, gamma=0.99, env=env, eval_env=eval_env,
                          vision=True)
         elif args.agent == 'b-dqn':
-            agent = BanditDQN(state_dim, action_dim, args.bandit_latent_dim, gamma=0.99, env=env, eval_env=eval_env,
+            agent = Bandit_DQN(state_dim, action_dim, args.bandit_latent_dim, gamma=0.99, env=env, eval_env=eval_env,
                         vision=True)            
         elif args.agent == 'dar':
             if args.dar_A is not None and args.dar_B is not None:
@@ -1567,7 +1611,7 @@ if __name__ == "__main__":
             agent = TDQN(state_dim, action_dim, args.skip_net_max_skips, gamma=0.99, env=env,
                          eval_env=eval_env, shared=False)
         elif args.agent == 'b-dqn':
-            agent = BanditDQN(state_dim, action_dim, args.skip_net_max_skips, gamma=0.99, env=env, eval_env=eval_env)
+            agent = Bandit_DQN(state_dim, action_dim, args.skip_net_max_skips, gamma=0.99, env=env, eval_env=eval_env)
         elif args.agent == 'dar':
             if args.dar_A is not None and args.dar_B is not None:
                 skip_map = {0: args.dar_A, 1: args.dar_B}

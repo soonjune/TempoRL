@@ -17,7 +17,7 @@ class Network(nn.Module):
 
 
 class NeuralTSDiag:
-    def __init__(self, dim, lamdba=1, nu=1, hidden=100, style='ts'):
+    def __init__(self, dim, lamdba=1, nu=1, hidden=100, style='ts', batch_size=64):
         self.func = Network(dim, hidden_size=hidden).cuda()
         self.context_list = None
         self.len = 0
@@ -28,6 +28,7 @@ class NeuralTSDiag:
         self.nu = nu
         self.style = style
         self.loss_func = nn.MSELoss()
+        self.batch_size = batch_size
 
     def select(self, context):
         tensor = torch.from_numpy(context).float().cuda()
@@ -60,31 +61,31 @@ class NeuralTSDiag:
         # TODO Batch update
         self.len += 1
         optimizer = optim.SGD(self.func.parameters(), lr=1e-3, weight_decay=self.lamdba / self.len)
-        if self.context_list is None:
-            self.context_list = torch.from_numpy(context.reshape(-1, 4)).to(device='cuda', dtype=torch.float32)
-            self.reward = torch.tensor(reward.reshape(-1,1), device='cuda', dtype=torch.float32)
-        elif self.context_list.shape[0] > 2000:
-            self.context_list = torch.cat(
-                (self.context_list[1:][:], torch.from_numpy(context.reshape(-1, 4)).to(device='cuda', dtype=torch.float32))
-            )
-            self.reward = torch.cat((self.reward[1:][:], torch.tensor(reward.reshape(-1,1), device='cuda', dtype=torch.float32)))
-        else:
-            self.context_list = torch.cat(
-                (self.context_list, torch.from_numpy(context.reshape(-1, 4)).to(device='cuda', dtype=torch.float32)))
-            self.reward = torch.cat((self.reward, torch.tensor(reward.reshape(-1,1), device='cuda', dtype=torch.float32)))
         # if self.context_list is None:
-        #     self.context_list = context.detach().reshape(256,-1).to(device='cuda', dtype=torch.float32)
-        #     self.reward = reward.detach()
+        #     self.context_list = torch.from_numpy(context.reshape(-1, 4)).to(device='cuda', dtype=torch.float32)
+        #     self.reward = torch.tensor(reward.reshape(-1,1), device='cuda', dtype=torch.float32)
         # elif self.context_list.shape[0] > 2000:
         #     self.context_list = torch.cat(
-        #         (self.context_list[256:][:], context.detach().reshape(256,-1).to(device='cuda', dtype=torch.float32))
+        #         (self.context_list[1:][:], torch.from_numpy(context.reshape(-1, 4)).to(device='cuda', dtype=torch.float32))
         #     )
-        #     self.reward = torch.cat((self.reward[256:][:], reward.detach().to(device='cuda', dtype=torch.float32)))
+        #     self.reward = torch.cat((self.reward[1:][:], torch.tensor(reward.reshape(-1,1), device='cuda', dtype=torch.float32)))
         # else:
         #     self.context_list = torch.cat(
-        #         (self.context_list, context.detach().reshape(256,-1).to(device='cuda', dtype=torch.float32))
-        #     )
-        #     self.reward = torch.cat((self.reward, reward.detach().to(device='cuda', dtype=torch.float32)))
+        #         (self.context_list, torch.from_numpy(context.reshape(-1, 4)).to(device='cuda', dtype=torch.float32)))
+        #     self.reward = torch.cat((self.reward, torch.tensor(reward.reshape(-1,1), device='cuda', dtype=torch.float32)))
+        if self.context_list is None:
+            self.context_list = context.detach().reshape(self.batch_size,-1).to(device='cuda', dtype=torch.float32)
+            self.reward = reward.detach()
+        elif self.context_list.shape[0] > 2000:
+            self.context_list = torch.cat(
+                (self.context_list[self.batch_size:][:], context.detach().reshape(self.batch_size,-1).to(device='cuda', dtype=torch.float32))
+            )
+            self.reward = torch.cat((self.reward[self.batch_size:][:], reward.detach().to(device='cuda', dtype=torch.float32)))
+        else:
+            self.context_list = torch.cat(
+                (self.context_list, context.detach().reshape(self.batch_size,-1).to(device='cuda', dtype=torch.float32))
+            )
+            self.reward = torch.cat((self.reward, reward.detach().to(device='cuda', dtype=torch.float32)))
         # if self.len % self.delay != 0:
         #     return 0
         for _ in range(50):

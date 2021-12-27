@@ -180,8 +180,8 @@ class ContextBuffer:
     """
 
     def __init__(self, extension, df, Q, action_dim):
-        self.context_mat = np.full((extension, extension), -1, dtype=int)  # might need to change type for other envs
-        self.reward_mat = np.full((extension, extension), np.nan, dtype=float)
+        self.context_mat = np.full((extension, 4), -1, dtype=int)  # might need to change type for other envs
+        self.reward_mat = np.full((extension, 1), np.nan, dtype=float)
         self.idx = 0
         self.df = df
         self.Q = Q
@@ -193,12 +193,11 @@ class ContextBuffer:
         :param reward: received reward
         :param next_state: state reached
         """
+        # create context actually visited
+        self.context_mat[self.idx, :] = np.concatenate((state, action, self.idx), axis=None)
+        # Automatically discount rewards when adding to corresponding skip
+        self.reward_mat[self.idx, :] = reward + np.nansum(self.reward_mat[self.idx - 1]) + max([self.Q[next_state][j] for j in range(self.action_dim)])
         self.idx += 1
-        for i in range(1, self.ext + 1)
-            # create context actually visited
-            self.context_mat[self.idx - i - 1, i] = np.concatenate((state, action, i), axis=None)
-            # Automatically discount rewards when adding to corresponding skip
-            self.reward_mat[self.idx - i - 1, i] = reward * self.df ** i + np.nansum(self.reward_mat[self.idx - i - 1]) + max([Q[next_state][j] for j in range(self.action_dim)])
 
 def temporl_q_learning(
         environment: GridCore,
@@ -374,23 +373,24 @@ def bandit_tee_q_learning(
         decay_stops = num_episodes
 
     epsilon_schedule_action = get_decay_schedule(epsilon, decay_starts, decay_stops, epsilon_decay)
-    epsilon_schedule_temporal = get_decay_schedule(epsilon, decay_starts, decay_stops, epsilon_decay)
     rewards = []
     lens = []
     test_rewards = []
     test_lens = []
     train_steps_list = []
     test_steps_list = []
+
+    # TODO Bandit policy
+    context_dimension = 1 + 2 + 1 #context dim = |A|+|S|+|N|
+    style = 'ts'
+    bandit_ed = NeuralTSDiag(context_dimension, 1, 1, 128, style)
+
+
     for i_episode in range(num_episodes + 1):
 
         # setup exploration policy for this episode
         epsilon_action = epsilon_schedule_action[min(i_episode, num_episodes - 1)]
-        epsilon_temporal = epsilon_schedule_temporal[min(i_episode, num_episodes - 1)]
         action_policy = make_epsilon_greedy_policy(action_Q, epsilon_action, environment.action_space.n)
-        # TODO Bandit policy
-        context_dimension = 1 +environment.observation_space.shape[0] + 1 #context dim = |A|+|S|+|N|
-        style = 'ts'
-        bandit_ed = NeuralTSDiag(context_dimension, 1, 1, 128, style)
 
         episode_r = 0
         state = environment.reset()  # type: list
@@ -401,14 +401,14 @@ def bandit_tee_q_learning(
             if done:
                 break
             action = np.random.choice(list(range(environment.action_space.n)), p=action_policy(state))
-            temporal_state = (state, action)
             action_pol_len += 1
             # create context (state+action+extension)
-            context = np.append(state, action, axis=1)
+            state_pos = np.asarray(np.unravel_index(state, environment.shape))
+            context = np.concatenate((state_pos, [action]))
             context = np.stack([context.copy() for i in range(max_ext)])
             context = np.c_[context, np.array([i for i in range(max_ext)])]
             # pull extension length
-            extension = bandit_ed.select(context)
+            extension, _, _, _ = bandit_ed.select(context)
 
             context_buffer = ContextBuffer(extension + 1, discount_factor, action_Q, environment.action_space.n)
             reward = 0
@@ -417,16 +417,17 @@ def bandit_tee_q_learning(
                     # only perform action if we are not done. If we are not done "skipping" though we have to
                     # still add reward and same state to the skip_transition.
                     s_, reward, done, _ = environment.step(action)
-                context_buffer.add(state, action, reward, s_)
+                context_buffer.add(np.unravel_index(state, environment.shape), action, (discount_factor**ext) * reward, s_)
 
                 # 1-step update of action Q (like in vanilla Q)
                 action_Q[state][action] = td_update(action_Q, state, action,
                                                         reward, s_, discount_factor, alpha)
 
-                # TODO update Bandit
-                bandit_ed.train(context_buffer.context_mat, context_buffer.reward_mat)
-
                 state = s_
+            print(f"s: {state}, a: {action}, e: {ext} ,r: {reward}")
+            # update Bandit after all extension experience has been collected
+            bandit_ed.train(context_buffer.context_mat, context_buffer.reward_mat)
+
 
         rewards.append(episode_r)
         lens.append(action_pol_len)
@@ -443,18 +444,17 @@ def bandit_tee_q_learning(
             action_pol_len = 0
             while True:  # roll out episode
                 action = np.random.choice(np.flatnonzero(action_Q[state] == action_Q[state].max()))
-                temporal_state = (state, action)
                 action_pol_len += 1
 
-                # Examples of different action selection schemes when greedily following a policy
-                # temporal_action = np.random.choice(
-                #     np.flatnonzero(temporal_Q[temporal_state] == temporal_Q[temporal_state].max()))
-                temporal_action = np.max(  # if there are ties use the larger action
-                    np.flatnonzero(temporal_Q[temporal_state] == temporal_Q[temporal_state].max()))
-                # temporal_action = np.min(  # if there are ties use the smaller action
-                #     np.flatnonzero(temporal_Q[temporal_state] == temporal_Q[temporal_state].max()))
+                # create context (state+action+extension)
+                state_pos = np.asarray(np.unravel_index(state, environment.shape))
+                context = np.concatenate((state_pos, [action]))
+                context = np.stack([context.copy() for i in range(max_ext)])
+                context = np.c_[context, np.array([i for i in range(max_ext)])]
+                # pull extension length
+                extension, _, _, _ = bandit_ed.select(context)
 
-                for i in range(temporal_action + 1):
+                for i in range(extension + 1):
                     environment.total_steps -= 1  # don't count evaluation steps
                     s_, reward, done, _ = environment.step(action)
                     test_steps += 1
@@ -542,6 +542,11 @@ if __name__ == '__main__':
                         type=int,
                         default=7,
                         help='Max skip size for tempoRL')
+    parser.add_argument('--store-result',
+                        type=int,
+                        default=1,
+                        help='whether to store result')
+
 
     # setup output dir
     args = parser.parse_args()
@@ -555,8 +560,8 @@ if __name__ == '__main__':
         # Clear screen in ANSI terminal
         print('\033c')
         print('\x1bc')
-
-    out_dir = experiments.prepare_output_dir(args, user_specified_dir=args.out_dir,
+    if args.store_result:
+        out_dir = experiments.prepare_output_dir(args, user_specified_dir=args.out_dir,
                                              time_format=outdir_suffix_dict[args.out_dir_suffix])
 
     np.random.seed(args.seed)  # seed nump
@@ -610,18 +615,19 @@ if __name__ == '__main__':
         raise NotImplemented
 
     # TODO save resulting Q-function for easy reuse
-    with open(os.path.join(out_dir, 'train_data.pkl'), 'wb') as outfh:
-        pickle.dump(train_data, outfh)
-    with open(os.path.join(out_dir, 'test_data.pkl'), 'wb') as outfh:
-        pickle.dump(test_data, outfh)
-    with open(os.path.join(out_dir, 'steps_per_episode.pkl'), 'wb') as outfh:
-        pickle.dump(num_steps, outfh)
+    if args.store_result:
+        with open(os.path.join(out_dir, 'train_data.pkl'), 'wb') as outfh:
+            pickle.dump(train_data, outfh)
+        with open(os.path.join(out_dir, 'test_data.pkl'), 'wb') as outfh:
+            pickle.dump(test_data, outfh)
+        with open(os.path.join(out_dir, 'steps_per_episode.pkl'), 'wb') as outfh:
+            pickle.dump(num_steps, outfh)
 
-    if args.agent == 'q':
-        with open(os.path.join(out_dir, 'Q.pkl'), 'wb') as outfh:
-            pickle.dump(dict(Q), outfh)
-    elif args.agent == 'sq':
-        with open(os.path.join(out_dir, 'Q.pkl'), 'wb') as outfh:
-            pickle.dump(dict(action_Q), outfh)
-        with open(os.path.join(out_dir, 'J.pkl'), 'wb') as outfh:
-            pickle.dump(dict(t_Q), outfh)
+        if args.agent == 'q':
+            with open(os.path.join(out_dir, 'Q.pkl'), 'wb') as outfh:
+                pickle.dump(dict(Q), outfh)
+        elif args.agent == 'sq':
+            with open(os.path.join(out_dir, 'Q.pkl'), 'wb') as outfh:
+                pickle.dump(dict(action_Q), outfh)
+            with open(os.path.join(out_dir, 'J.pkl'), 'wb') as outfh:
+                pickle.dump(dict(t_Q), outfh)

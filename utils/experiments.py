@@ -7,7 +7,7 @@ import tempfile
 
 
 def prepare_output_dir(args, user_specified_dir=None, argv=None,
-                       time_format='%Y%m%dT%H%M%S.%f'):
+                       time_format='%Y%m%dT%H%M%S'):
     """
     Largely a copy of chainerRLs prepare output dir
     See (https://github.com/chainer/chainerrl/blob/018a29132d77e5af0f92161250c72aba10c6ce29/chainerrl/experiments/prepare_output_dir.py)
@@ -32,7 +32,7 @@ def prepare_output_dir(args, user_specified_dir=None, argv=None,
     Returns:
         Path of the output directory created by this function (str).
     """
-    time_str = datetime.datetime.now().strftime(time_format)
+    time_str = datetime.datetime.now().strftime("%Y_%m_%dT%H_%M_%S")
     if user_specified_dir is not None:
         if os.path.exists(user_specified_dir):
             if not os.path.isdir(user_specified_dir):

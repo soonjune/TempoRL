@@ -1,0 +1,2 @@
+{"elapsed_time": 2.800027370452881, "training_steps": 200, "training_eps": 0, "avg_num_steps_per_eval_ep": 200.0, "avg_num_decs_per_eval_ep": 200.0, "avg_rew_per_eval_ep": -200.0, "std_rew_per_eval_ep": 0.0, "eval_eps": 1}
+{"elapsed_time": 5.406017303466797, "training_steps": 400, "training_eps": 1, "avg_num_steps_per_eval_ep": 200.0, "avg_num_decs_per_eval_ep": 200.0, "avg_rew_per_eval_ep": -200.0, "std_rew_per_eval_ep": 0.0, "eval_eps": 1}
