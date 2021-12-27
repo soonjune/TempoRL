@@ -174,6 +174,32 @@ class SkipTransition:
             self.reward_mat[self.idx - i - 1, i] = reward * self.df ** i + np.nansum(self.reward_mat[self.idx - i - 1])
 
 
+class ContextBuffer:
+    """
+    Simple helper class to keep track of all transitions observed when skipping through an MDP
+    """
+
+    def __init__(self, extension, df, Q, action_dim):
+        self.context_mat = np.full((extension, extension), -1, dtype=int)  # might need to change type for other envs
+        self.reward_mat = np.full((extension, extension), np.nan, dtype=float)
+        self.idx = 0
+        self.df = df
+        self.Q = Q
+        self.action_dim = action_dim
+
+    def add(self, state, action, reward, next_state):
+        """
+        Add reward and next_state to triangular matrix
+        :param reward: received reward
+        :param next_state: state reached
+        """
+        self.idx += 1
+        for i in range(1, self.ext + 1)
+            # create context actually visited
+            self.context_mat[self.idx - i - 1, i] = np.concatenate((state, action, i), axis=None)
+            # Automatically discount rewards when adding to corresponding skip
+            self.reward_mat[self.idx - i - 1, i] = reward * self.df ** i + np.nansum(self.reward_mat[self.idx - i - 1]) + max([Q[next_state][j] for j in range(self.action_dim)])
+
 def temporl_q_learning(
         environment: GridCore,
         num_episodes: int,
@@ -361,7 +387,7 @@ def bandit_tee_q_learning(
         epsilon_action = epsilon_schedule_action[min(i_episode, num_episodes - 1)]
         epsilon_temporal = epsilon_schedule_temporal[min(i_episode, num_episodes - 1)]
         action_policy = make_epsilon_greedy_policy(action_Q, epsilon_action, environment.action_space.n)
-        # TODO bandit policy
+        # TODO Bandit policy
         context_dimension = 1 +environment.observation_space.shape[0] + 1 #context dim = |A|+|S|+|N|
         style = 'ts'
         bandit_ed = NeuralTSDiag(context_dimension, 1, 1, 128, style)
@@ -369,48 +395,39 @@ def bandit_tee_q_learning(
         episode_r = 0
         state = environment.reset()  # type: list
         action_pol_len = 0
+        s_ = None
+        done = False
         while True:  # roll out episode
+            if done:
+                break
             action = np.random.choice(list(range(environment.action_space.n)), p=action_policy(state))
             temporal_state = (state, action)
             action_pol_len += 1
-            temporal_action = np.random.choice(list(range(temporal_actions)), p=temporal_policy(temporal_state))
+            # create context (state+action+extension)
+            context = np.append(state, action, axis=1)
+            context = np.stack([context.copy() for i in range(max_ext)])
+            context = np.c_[context, np.array([i for i in range(max_ext)])]
+            # pull extension length
+            extension = bandit_ed.select(context)
 
-            s_ = None
-            done = False
-            tmp_state = state
-            skip_transition = SkipTransition(temporal_action + 1, discount_factor)
+            context_buffer = ContextBuffer(extension + 1, discount_factor, action_Q, environment.action_space.n)
             reward = 0
-            for tmp_temporal_action in range(temporal_action + 1):
+            for ext in range(extension + 1):
                 if not done:
                     # only perform action if we are not done. If we are not done "skipping" though we have to
                     # still add reward and same state to the skip_transition.
                     s_, reward, done, _ = environment.step(action)
-                skip_transition.add(reward, tmp_state)
+                context_buffer.add(state, action, reward, s_)
 
                 # 1-step update of action Q (like in vanilla Q)
-                action_Q[tmp_state][action] = td_update(action_Q, tmp_state, action,
+                action_Q[state][action] = td_update(action_Q, state, action,
                                                         reward, s_, discount_factor, alpha)
 
-                count = 0
-                # For all sofar observed transitions compute all forward skip updates
-                for skip_num in range(skip_transition.idx):
-                    skip = skip_transition.state_mat[skip_num]
-                    rew = skip_transition.reward_mat[skip_num]
-                    skip_start_state = (skip[0], action)
+                # TODO update Bandit
+                bandit_ed.train(context_buffer.context_mat, context_buffer.reward_mat)
 
-                    # Temporal TD update
-                    best_next_action = np.random.choice(
-                        np.flatnonzero(action_Q[s_] == action_Q[s_].max()))  # greedy best next
-                    td_target = rew[skip_transition.idx - 1 - count] + (
-                            discount_factor ** (skip_transition.idx - 1)) * action_Q[s_][best_next_action]
-                    td_delta = td_target - temporal_Q[skip_start_state][skip_transition.idx - count - 1]
-                    temporal_Q[skip_start_state][skip_transition.idx - count - 1] += alpha * td_delta
-                    count += 1
+                state = s_
 
-                tmp_state = s_
-            state = s_
-            if done:
-                break
         rewards.append(episode_r)
         lens.append(action_pol_len)
         train_steps_list.append(environment.total_steps)
