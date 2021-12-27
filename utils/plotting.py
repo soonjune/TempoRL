@@ -122,6 +122,7 @@ def plot_rewards(ax, methods, rewards, title, episodes=50_000,
     max_m = -np.inf
     for method in methods:
         m, s = rewards[method].mean(axis=0), rewards[method].std(axis=0)
+        print(rewards)
         # used for AUC computation
         m_, s_ = ((rewards[method] + 1) / 2).mean(axis=0), ((rewards[method] + 1) / 2).std(axis=0)
         min_m = min(min(m), min_m)

@@ -4,6 +4,7 @@ from collections import defaultdict
 
 import numpy as np
 from utils import experiments
+from utils.neuralTS import NeuralTSDiag
 
 from grid_envs import GridCore
 
@@ -314,6 +315,149 @@ def temporl_q_learning(
     return (rewards, lens), (test_rewards, test_lens), (train_steps_list, test_steps_list), (action_Q, temporal_Q)
 
 
+def bandit_tee_q_learning(
+        environment: GridCore,
+        num_episodes: int,
+        discount_factor: float = 1.0,
+        alpha: float = 0.5,
+        epsilon: float = 0.1,
+        epsilon_decay: str = 'const',
+        decay_starts: int = 0,
+        decay_stops: int = None,
+        eval_every: int = 10,
+        render_eval: bool = True,
+        max_ext: int = 7):
+    """
+    Implementation of tabular TempoRL
+    :param environment: which environment to use
+    :param num_episodes: number of episodes to train
+    :param discount_factor: discount factor used in TD updates
+    :param alpha: learning rate used in TD updates
+    :param epsilon: exploration fraction (either constant or starting value for schedule)
+    :param epsilon_decay: determine type of exploration (constant, linear/exponential decay schedule)
+    :param decay_starts: After how many episodes epsilon decay starts
+    :param decay_stops: Episode after which to stop epsilon decay
+    :param eval_every: Number of episodes between evaluations
+    :param render_eval: Flag to activate/deactivate rendering of evaluation runs
+    :param max_ext: Maximum extension size to use.
+    :return: training and evaluation statistics (i.e. rewards and episode lengths)
+    """
+    temporal_actions = max_ext
+    action_Q = defaultdict(lambda: np.zeros(environment.action_space.n))
+    if not decay_stops:
+        decay_stops = num_episodes
+
+    epsilon_schedule_action = get_decay_schedule(epsilon, decay_starts, decay_stops, epsilon_decay)
+    epsilon_schedule_temporal = get_decay_schedule(epsilon, decay_starts, decay_stops, epsilon_decay)
+    rewards = []
+    lens = []
+    test_rewards = []
+    test_lens = []
+    train_steps_list = []
+    test_steps_list = []
+    for i_episode in range(num_episodes + 1):
+
+        # setup exploration policy for this episode
+        epsilon_action = epsilon_schedule_action[min(i_episode, num_episodes - 1)]
+        epsilon_temporal = epsilon_schedule_temporal[min(i_episode, num_episodes - 1)]
+        action_policy = make_epsilon_greedy_policy(action_Q, epsilon_action, environment.action_space.n)
+        # TODO bandit policy
+        context_dimension = 1 +environment.observation_space.shape[0] + 1 #context dim = |A|+|S|+|N|
+        style = 'ts'
+        bandit_ed = NeuralTSDiag(context_dimension, 1, 1, 128, style)
+
+        episode_r = 0
+        state = environment.reset()  # type: list
+        action_pol_len = 0
+        while True:  # roll out episode
+            action = np.random.choice(list(range(environment.action_space.n)), p=action_policy(state))
+            temporal_state = (state, action)
+            action_pol_len += 1
+            temporal_action = np.random.choice(list(range(temporal_actions)), p=temporal_policy(temporal_state))
+
+            s_ = None
+            done = False
+            tmp_state = state
+            skip_transition = SkipTransition(temporal_action + 1, discount_factor)
+            reward = 0
+            for tmp_temporal_action in range(temporal_action + 1):
+                if not done:
+                    # only perform action if we are not done. If we are not done "skipping" though we have to
+                    # still add reward and same state to the skip_transition.
+                    s_, reward, done, _ = environment.step(action)
+                skip_transition.add(reward, tmp_state)
+
+                # 1-step update of action Q (like in vanilla Q)
+                action_Q[tmp_state][action] = td_update(action_Q, tmp_state, action,
+                                                        reward, s_, discount_factor, alpha)
+
+                count = 0
+                # For all sofar observed transitions compute all forward skip updates
+                for skip_num in range(skip_transition.idx):
+                    skip = skip_transition.state_mat[skip_num]
+                    rew = skip_transition.reward_mat[skip_num]
+                    skip_start_state = (skip[0], action)
+
+                    # Temporal TD update
+                    best_next_action = np.random.choice(
+                        np.flatnonzero(action_Q[s_] == action_Q[s_].max()))  # greedy best next
+                    td_target = rew[skip_transition.idx - 1 - count] + (
+                            discount_factor ** (skip_transition.idx - 1)) * action_Q[s_][best_next_action]
+                    td_delta = td_target - temporal_Q[skip_start_state][skip_transition.idx - count - 1]
+                    temporal_Q[skip_start_state][skip_transition.idx - count - 1] += alpha * td_delta
+                    count += 1
+
+                tmp_state = s_
+            state = s_
+            if done:
+                break
+        rewards.append(episode_r)
+        lens.append(action_pol_len)
+        train_steps_list.append(environment.total_steps)
+
+        # ---------------------------------------------- EVALUATION -------------------------------------------------
+        # ---------------------------------------------- EVALUATION -------------------------------------------------
+        test_steps = 0
+        if i_episode % eval_every == 0:
+            episode_r = 0
+            state = environment.reset()  # type: list
+            if render_eval:
+                environment.render(in_control=True)
+            action_pol_len = 0
+            while True:  # roll out episode
+                action = np.random.choice(np.flatnonzero(action_Q[state] == action_Q[state].max()))
+                temporal_state = (state, action)
+                action_pol_len += 1
+
+                # Examples of different action selection schemes when greedily following a policy
+                # temporal_action = np.random.choice(
+                #     np.flatnonzero(temporal_Q[temporal_state] == temporal_Q[temporal_state].max()))
+                temporal_action = np.max(  # if there are ties use the larger action
+                    np.flatnonzero(temporal_Q[temporal_state] == temporal_Q[temporal_state].max()))
+                # temporal_action = np.min(  # if there are ties use the smaller action
+                #     np.flatnonzero(temporal_Q[temporal_state] == temporal_Q[temporal_state].max()))
+
+                for i in range(temporal_action + 1):
+                    environment.total_steps -= 1  # don't count evaluation steps
+                    s_, reward, done, _ = environment.step(action)
+                    test_steps += 1
+                    if render_eval:
+                        environment.render(in_control=False)
+                    episode_r += reward
+                    if done:
+                        break
+                if render_eval:
+                    environment.render(in_control=True)
+                state = s_
+                if done:
+                    break
+            test_rewards.append(episode_r)
+            test_lens.append(action_pol_len)
+            test_steps_list.append(test_steps)
+            print('Done %4d/%4d episodes' % (i_episode, num_episodes))
+    return (rewards, lens), (test_rewards, test_lens), (train_steps_list, test_steps_list), (action_Q, temporal_Q)
+
+
 if __name__ == '__main__':
     import argparse
 
@@ -326,7 +470,7 @@ if __name__ == '__main__':
                         type=int,
                         help='Number of training episodes')
     parser.add_argument('--out-dir',
-                        default=None,
+                        default='/home/seungjoonpark/TempoRL/experiments/tabular_results',
                         type=str,
                         help='Directory to save results. Defaults to tmp dir.')
     parser.add_argument('--out-dir-suffix',
@@ -355,7 +499,7 @@ if __name__ == '__main__':
                         dest='agent_eps')
     parser.add_argument('--agent',
                         default='sq',
-                        choices={'sq', 'q'},
+                        choices={'sq', 'q', 'bandit'},
                         type=str.lower,
                         help='Agent type to train')
     parser.add_argument('--env',
@@ -436,6 +580,15 @@ if __name__ == '__main__':
                                                          discount_factor=.99,
                                                          alpha=.5, eval_every=args.eval_eps,
                                                          render_eval=not args.no_render)
+    elif args.agent == 'bandit':
+        train_data, test_data, num_steps, Q = bandit_tee_q_learning(d, args.episodes,
+                                                                    epsilon_decay=args.agent_eps_d,
+                                                                    epsilon=args.agent_eps,
+                                                                    discount_factor=.99, alpha=.5,
+                                                                    eval_every=args.eval_eps,
+                                                                    render_eval=not args.no_render,
+                                                                    max_ext=args.max_skips)
+
     else:
         raise NotImplemented
 
