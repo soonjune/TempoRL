@@ -8,14 +8,12 @@ import torch.optim as optim
 class Network(nn.Module):
     def __init__(self, dim, hidden_size=100):
         super(Network, self).__init__()
-        self.input_batch_norm = nn.BatchNorm1d(dim)
         self.fc1 = nn.Linear(dim, hidden_size)
         self.activate = nn.ReLU()
         self.fc2 = nn.Linear(hidden_size, 1)
 
     def forward(self, x):
-        return self.fc2(self.activate(self.fc1(self.input_batch_norm(x))))
-
+        return self.fc2(self.activate(self.fc1(x)))
 
 class NeuralTSDiag:
     def __init__(self, dim, lamdba=1, nu=1, hidden=100, style='ts', batch_size=64):
@@ -93,7 +91,7 @@ class NeuralTSDiag:
         if self.context_list is None:
             self.context_list = context.detach().reshape(self.batch_size,-1).to(device='cuda', dtype=torch.float32)
             self.reward = reward.detach()
-        elif self.context_list.shape[0] > 512:
+        elif self.context_list.shape[0] > 1024:
             self.context_list = torch.cat(
                 (self.context_list[self.batch_size:][:], context.detach().reshape(self.batch_size,-1).to(device='cuda', dtype=torch.float32))
             )
@@ -105,7 +103,7 @@ class NeuralTSDiag:
             self.reward = torch.cat((self.reward, reward.detach().to(device='cuda', dtype=torch.float32)))
         # if self.len % self.delay != 0:
         #     return 0
-        for _ in range(16):
+        for _ in range(32):
             pred = self.func(self.context_list).view(-1)
             loss = self.loss_func(pred, self.reward.view(-1))
             loss.backward()

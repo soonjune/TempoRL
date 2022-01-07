@@ -16,6 +16,7 @@ from utils.neuralTS_featurized import NeuralTSDiag
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+
 def tt(ndarray):
     """
     Helper Function to cast observation to correct type/device
@@ -169,6 +170,7 @@ class Q(nn.Module):
         x = self._non_linearity(self.fc2(x))
         return self.fc3(x)
 
+
 class TQ(nn.Module):
     """
     Q-Function that takes the behaviour action as context.
@@ -297,7 +299,7 @@ class SkipReplayBuffer:
         batch_rewards = np.array([self._data.rewards[i] for i in batch_indices])
         batch_terminal_flags = np.array([self._data.terminal_flags[i] for i in batch_indices])
         batch_lengths = np.array([self._data.lengths[i] for i in batch_indices])
-        return tt(batch_states), tt(batch_actions), tt(batch_next_states),\
+        return tt(batch_states), tt(batch_actions), tt(batch_next_states), \
                tt(batch_rewards), tt(batch_terminal_flags), tt(batch_lengths)
 
 
@@ -345,7 +347,7 @@ class NoneConcatSkipReplayBuffer:
         batch_terminal_flags = np.array([self._data.terminal_flags[i] for i in batch_indices])
         batch_lengths = np.array([self._data.lengths[i] for i in batch_indices])
         batch_behavoiurs = np.array([self._data.behaviour_action[i] for i in batch_indices])
-        return tt(batch_states), tt(batch_actions), tt(batch_next_states),\
+        return tt(batch_states), tt(batch_actions), tt(batch_next_states), \
                tt(batch_rewards), tt(batch_terminal_flags), tt(batch_lengths), tt(batch_behavoiurs)
 
 
@@ -377,9 +379,8 @@ class ContextReplayBuffer:
         batch_indices = np.random.choice(len(self._data.contexts), batch_size)
         batch_contexts = np.array([self._data.contexts[i] for i in batch_indices])
         batch_rewards = np.array([self._data.rewards[i] for i in batch_indices])
-        return tt(batch_contexts),\
-             tt(batch_rewards)
-
+        return tt(batch_contexts), \
+               tt(batch_rewards)
 
 
 class DQN:
@@ -469,8 +470,9 @@ class DQN:
                 self._replay_buffer.add_transition(s, a, ns, r, d)
                 batch_states, batch_actions, batch_next_states, batch_rewards, batch_terminal_flags = \
                     self._replay_buffer.random_next_batch(64)
-                batch_states, batch_actions, batch_next_states, batch_rewards, batch_terminal_flags =\
-                batch_states.to(device), batch_actions.to(device), batch_next_states.to(device), batch_rewards.to(device), batch_terminal_flags.to(device)
+                batch_states, batch_actions, batch_next_states, batch_rewards, batch_terminal_flags = \
+                    batch_states.to(device), batch_actions.to(device), batch_next_states.to(device), batch_rewards.to(
+                        device), batch_terminal_flags.to(device)
 
                 ########### Begin double Q-learning update
                 target = batch_rewards + (1 - batch_terminal_flags) * self._gamma * \
@@ -647,7 +649,8 @@ class DAR:
                     batch_states, batch_actions, batch_next_states, batch_rewards, batch_terminal_flags = \
                         self._replay_buffer.random_next_batch(64)
                     batch_states, batch_actions, batch_next_states, batch_rewards, batch_terminal_flags = \
-                    batch_states.to(device), batch_actions.to(device), batch_next_states.to(device), batch_rewards.to(device), batch_terminal_flags.to(device)
+                        batch_states.to(device), batch_actions.to(device), batch_next_states.to(
+                            device), batch_rewards.to(device), batch_terminal_flags.to(device)
 
                     target = batch_rewards + (1 - batch_terminal_flags) * self._gamma * \
                              self._q_target(batch_next_states)[torch.arange(64).long(), torch.argmax(
@@ -857,7 +860,7 @@ class TQN:
                     es += 1
                     skip_states.append(np.hstack([s, [a]]))  # keep track of all states that are visited inbetween
                     skip_rewards.append(r)
-                    
+
                     #### Evaluation
                     if (total_steps % eval_every_n_steps) == 0:
                         eval_s, eval_r, eval_d = self.eval(eval_eps, max_env_time_steps)
@@ -884,15 +887,16 @@ class TQN:
                             skip_reward += np.power(self._gamma, exp) * r
 
                         self._skip_replay_buffer.add_transition(start_state, curr_skip - skip_id, ns,
-                                                                skip_reward, d, curr_skip - skip_id + 1) 
+                                                                skip_reward, d, curr_skip - skip_id + 1)
                         skip_id += 1
 
                     # Skip Q update based on double DQN where the target is the behaviour network
                     batch_states, batch_actions, batch_next_states, batch_rewards, \
                     batch_terminal_flags, batch_lengths = self._skip_replay_buffer.random_next_batch(64)
-                    
+
                     batch_states, batch_actions, batch_next_states, batch_rewards, batch_terminal_flags, batch_lengths = \
-                    batch_states.to(device), batch_actions.to(device), batch_next_states.to(device), batch_rewards.to(device), batch_terminal_flags.to(device), batch_lengths.to(device)
+                        batch_states.to(device), batch_actions.to(device), batch_next_states.to(
+                            device), batch_rewards.to(device), batch_terminal_flags.to(device), batch_lengths.to(device)
 
                     target = batch_rewards + (1 - batch_terminal_flags) * torch.pow(self._gamma, batch_lengths) * \
                              self._q_target(batch_next_states)[torch.arange(64).long(), torch.argmax(
@@ -911,7 +915,8 @@ class TQN:
                         self._replay_buffer.random_next_batch(64)
 
                     batch_states, batch_actions, batch_next_states, batch_rewards, batch_terminal_flags = \
-                    batch_states.to(device), batch_actions.to(device), batch_next_states.to(device), batch_rewards.to(device), batch_terminal_flags.to(device)
+                        batch_states.to(device), batch_actions.to(device), batch_next_states.to(
+                            device), batch_rewards.to(device), batch_terminal_flags.to(device)
 
                     target = batch_rewards + (1 - batch_terminal_flags) * self._gamma * \
                              self._q_target(batch_next_states)[torch.arange(64).long(), torch.argmax(
@@ -965,7 +970,7 @@ class TDQN:
     TempoRL DQN agent capable of handling more complex state inputs through use of contextualized behaviour actions.
     """
 
-    def __init__(self, state_dim, action_dim, skip_dim, gamma, env, eval_env, vision=False, shared=True):
+    def __init__(self, state_dim, action_dim, skip_dim, gamma, vision=False, shared=True):
         """
         Initialize the DQN Agent
         :param state_dim: dimensionality of the input states
@@ -1127,16 +1132,18 @@ class TDQN:
                             skip_reward += np.power(self._gamma, exp) * r
 
                         self._skip_replay_buffer.add_transition(start_state, curr_skip - skip_id, ns,
-                                                                skip_reward, d, curr_skip - skip_id + 1, np.array([a]))  # also keep track of the behavior action 
+                                                                skip_reward, d, curr_skip - skip_id + 1, np.array(
+                                [a]))  # also keep track of the behavior action
                         skip_id += 1
 
                     # Skip Q update based on double DQN where target is behavior Q
-                    batch_states, batch_actions, batch_next_states, batch_rewards,\
-                        batch_terminal_flags, batch_lengths, batch_behaviours = \
+                    batch_states, batch_actions, batch_next_states, batch_rewards, \
+                    batch_terminal_flags, batch_lengths, batch_behaviours = \
                         self._skip_replay_buffer.random_next_batch(64)
-                    batch_states, batch_actions, batch_next_states, batch_rewards,\
-                        batch_terminal_flags, batch_lengths, batch_behaviours = \
-                    batch_states.to(device), batch_actions.to(device), batch_next_states.to(device), batch_rewards.to(device),\
+                    batch_states, batch_actions, batch_next_states, batch_rewards, \
+                    batch_terminal_flags, batch_lengths, batch_behaviours = \
+                        batch_states.to(device), batch_actions.to(device), batch_next_states.to(
+                            device), batch_rewards.to(device), \
                         batch_terminal_flags.to(device), batch_lengths.to(device), batch_behaviours.to(device)
 
                     target = batch_rewards + (1 - batch_terminal_flags) * torch.pow(self._gamma, batch_lengths) * \
@@ -1156,7 +1163,8 @@ class TDQN:
                     batch_states, batch_actions, batch_next_states, batch_rewards, batch_terminal_flags = \
                         self._replay_buffer.random_next_batch(64)
                     batch_states, batch_actions, batch_next_states, batch_rewards, batch_terminal_flags = \
-                    batch_states.to(device), batch_actions.to(device), batch_next_states.to(device), batch_rewards.to(device), batch_terminal_flags.to(device) 
+                        batch_states.to(device), batch_actions.to(device), batch_next_states.to(
+                            device), batch_rewards.to(device), batch_terminal_flags.to(device)
 
                     target = batch_rewards + (1 - batch_terminal_flags) * self._gamma * \
                              self._q_target(batch_next_states)[torch.arange(64).long(), torch.argmax(
@@ -1283,7 +1291,7 @@ class BanditDQN:
         steps, rewards, decisions = [], [], []
         eval_ext = dict()
         for i in range(self._skip_dim):
-            eval_ext[i+1] = 0
+            eval_ext[i + 1] = 0
 
         with torch.no_grad():
             for e in range(episodes):
@@ -1300,7 +1308,7 @@ class BanditDQN:
                     # print('')
                     # skip = self.get_skip(np.array([s]), np.array([[a]]), 0)
                     extension = self.get_ext(s, np.array([a]), True)
-                    eval_ext[extension+1] += 1
+                    eval_ext[extension + 1] += 1
                     ed += 1
 
                     d = False
@@ -1317,7 +1325,7 @@ class BanditDQN:
                 rewards.append(er)
                 decisions.append(ed)
 
-        return steps, rewards, decisions, {k: eval_ext[k]/sum(eval_ext[k] for k in eval_ext) for k in eval_ext}
+        return steps, rewards, decisions, {k: eval_ext[k] / sum(eval_ext[k] for k in eval_ext) for k in eval_ext}
 
     def train(self, episodes: int, max_env_time_steps: int, epsilon: float, eval_eps: int = 1,
               eval_every_n_steps: int = 1, max_train_time_steps: int = 1_000_000):
@@ -1337,10 +1345,12 @@ class BanditDQN:
             s = self._env.reset()
             es = 0
             d = False
+            done_idx = None
             for _ in count():
                 a = self.get_action(s, epsilon)
                 extension = self.get_ext(s, np.array([a]), False)  # get skip with the selected action as context
 
+                beginning_state = s # state to start extended action
                 skip_states, skip_rewards = [], []
                 for curr_skip in range(extension + 1):  # repeat the selected action for "skip" times
                     ns, r, d, _ = self._env.step(a)
@@ -1367,21 +1377,27 @@ class BanditDQN:
                         with open(os.path.join(out_dir, 'eval_scores.json'), 'a+') as out_fh:
                             json.dump(eval_stats, out_fh)
                             out_fh.write('\n')
+                    if d:
+                        done_idx = curr_skip
                     #### End Evaluation
 
-                    # TDOD Update bandit with observed states
-                    skip_id = 0
-                    for start_state in skip_states:
-                        skip_reward = 0
-                        for exp, r in enumerate(skip_rewards[skip_id:]):  # make sure to properly discount
+                # create context depending on done
+                for idx, start_state in enumerate(skip_states):
+                    skip_reward = 0
+                    if not done_idx:
+                        skip_reward = max(self._q(tt(start_state).to(device)).detach().cpu().numpy())
+                        context = np.concatenate(
+                            (beginning_state, [a / (self._action_dim - 1)], [idx / (self._skip_dim - 1)]))
+                        self._context_replay_buffer.add_transition(context,
+                                                                   skip_reward)  # also keep track of the behavior action
+                    else:
+                        print("done")
+                        for exp, r in enumerate(skip_rewards[:idx + 1]):  # make sure to properly discount
                             skip_reward += np.power(self._gamma, exp) * r
-                        if not d:
-                            skip_reward += max(self._q(tt(skip_states[-1]).to(device)).detach().cpu().numpy())
-
-                        # create context
-                        context = np.concatenate((start_state, [a], [curr_skip - skip_id + 1]))
-                        self._context_replay_buffer.add_transition(context, skip_reward)  # also keep track of the behavior action
-                        skip_id += 1
+                            context = np.concatenate(
+                                (beginning_state, [a / (self._action_dim - 1)], [idx / (self._skip_dim - 1)]))
+                            self._context_replay_buffer.add_transition(context,
+                                                                       skip_reward)  # also keep track of the behavior action
 
                     # Bandit update
                     batch_contexts, batch_rewards = self._context_replay_buffer.random_next_batch(64)
@@ -1393,7 +1409,8 @@ class BanditDQN:
                     batch_states, batch_actions, batch_next_states, batch_rewards, batch_terminal_flags = \
                         self._replay_buffer.random_next_batch(64)
                     batch_states, batch_actions, batch_next_states, batch_rewards, batch_terminal_flags = \
-                    batch_states.to(device), batch_actions.to(device), batch_next_states.to(device), batch_rewards.to(device), batch_terminal_flags.to(device) 
+                        batch_states.to(device), batch_actions.to(device), batch_next_states.to(
+                            device), batch_rewards.to(device), batch_terminal_flags.to(device)
 
                     target = batch_rewards + (1 - batch_terminal_flags) * self._gamma * \
                              self._q_target(batch_next_states)[torch.arange(64).long(), torch.argmax(
@@ -1441,6 +1458,7 @@ class BanditDQN:
         #                       self._replay_buffer, self._skip_replay_buffer}
         torch.save(self._q.state_dict(), os.path.join(path, 'Q'))
         torch.save(self.bandit_ed.func.state_dict(), os.path.join(path, 'Bandit'))
+
 
 if __name__ == "__main__":
     import argparse
@@ -1518,17 +1536,17 @@ if __name__ == "__main__":
         epis, args.skip_net_max_skips, args.env_ms)
     outdir_suffix_dict['paramsseed'] = outdir_suffix_dict['paramsseed'].format(
         epis, args.skip_net_max_skips, args.env_ms, args.seed)
-    
-    out_dir = experiments.prepare_output_dir(args, user_specified_dir=args.out_dir+'/'+args.agent,
+
+    out_dir = experiments.prepare_output_dir(args, user_specified_dir=args.out_dir + '/' + args.agent,
                                              time_format=outdir_suffix_dict[args.out_dir_suffix])
-    
+
     if args.env == 'pong':  # attempt at getting it to work with Pong
         from utils.env_wrappers import make_env  # TODO figure out if this wrapping is correct
 
         # Setup Envs
         env = make_env("PongNoFrameskip-v4")
         eval_env = make_env("PongNoFrameskip-v4")
-    
+
         # Setup Agent
         state_dim = env.observation_space.shape[0]
         action_dim = env.action_space.n
@@ -1542,7 +1560,7 @@ if __name__ == "__main__":
                          vision=True)
         elif args.agent == 'b-dqn':
             agent = BanditDQN(state_dim, action_dim, args.bandit_latent_dim, gamma=0.99, env=env, eval_env=eval_env,
-                        vision=True)            
+                              vision=True)
         elif args.agent == 'dar':
             if args.dar_A is not None and args.dar_B is not None:
                 skip_map = {0: args.dar_A, 1: args.dar_B}
@@ -1588,7 +1606,7 @@ if __name__ == "__main__":
                         eval_env=eval_env)
         else:
             raise NotImplementedError
-    
+
     episodes = args.episodes
     max_env_time_steps = args.env_ms
     epsilon = 0.2

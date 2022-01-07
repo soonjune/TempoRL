@@ -15,7 +15,6 @@ from mountain_car import MountainCarEnv
 from utils import experiments
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-device = torch.device('cpu')
 
 
 def tt(ndarray):
@@ -44,6 +43,21 @@ def hard_update(target, source):
     See soft_update
     """
     soft_update(target, source, 1.0)
+
+class BanditNet(nn.Module):
+    def __init__(self, context_dim, bandit_dim, non_linearity=F.relu, hidden_dim=10):
+        super(BanditNet, self).__init__()
+        self.fc1 = nn.Linear(context_dim, hidden_dim)
+        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
+        self.fc3 = nn.Linear(hidden_dim, bandit_dim)
+        self._non_linearity = non_linearity
+
+    def forward(self, x):
+        x = self._non_linearity(self.fc1(x))
+        x = self._non_linearity(self.fc2(x))
+        return self.fc3(x)
+
+
 
 
 class NatureDQN(nn.Module):
